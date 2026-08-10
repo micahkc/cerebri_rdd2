@@ -39,6 +39,10 @@ manifest:
       remote: zephyrproject-rtos
       revision: 53946adb08b54449391c1c0c73cdd094d92a3b6e
       path: modules/hal/nxp
+    - name: hal_stm32
+      remote: zephyrproject-rtos
+      revision: 729ba54f3c17a3a298d665ce4b86f2b8f9d3726e # matches zephyr bf19ff6 west.yml
+      path: modules/hal/stm32
     - name: hal_tdk
       remote: zephyrproject-rtos
       revision: 0f209bd0a4b6511c8c6ffddda75da1fe6988df8f

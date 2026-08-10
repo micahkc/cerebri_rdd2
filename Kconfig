@@ -9,6 +9,16 @@ config PWM_FREQUENCY
     int "PWM motors frequency in Hz"
     depends on PWM
     default 400
+
+config RDD2_PWM_FIRST_CHANNEL
+    int "PWM channel number of the first motor output"
+    depends on PWM
+    range 0 1
+    default 0
+    help
+      Motor N is driven on PWM channel N plus this offset. Controllers
+      with zero-based channels (native_sim) use 0; STM32 timers number
+      their channels from 1.
     
 menu "RDD2"
 

@@ -1,0 +1,111 @@
+/* SPDX-License-Identifier: Apache-2.0
+ *
+ * WeAct Black Pill F411CE micro-quad wiring.
+ *
+ * This overlay is the single place that says WHICH sensors and actuators are
+ * connected and on WHAT bus/pins. The application only consumes the aliases
+ * below (imu0, rc, motors, gnss, zros-serial); swap the nodes they point at
+ * to change hardware without touching any C code. Driver enablement and
+ * tuning (stack sizes, streaming mode) live in blackpill_f411ce.conf next to
+ * this file.
+ *
+ * Pin budget on the Black Pill:
+ *   PA4  SPI1 CS    - IMU chip select (GPIO, active low)
+ *   PA5  SPI1 SCK   - IMU
+ *   PA6  SPI1 MISO  - IMU
+ *   PA7  SPI1 MOSI  - IMU
+ *   PB0  EXTI       - IMU INT1 (data-ready, paces the rate loop)
+ *   PB6  TIM4 CH1   - motor 1 (PWM 400 Hz; see CONFIG_PWM_FREQUENCY)
+ *   PB7  TIM4 CH2   - motor 2
+ *   PB8  TIM4 CH3   - motor 3 (frees I2C1, disabled below)
+ *   PB9  TIM4 CH4   - motor 4
+ *   PA2  USART2 TX  - CRSF telemetry back to the RC receiver
+ *   PA3  USART2 RX  - CRSF RC input, 420 kBd
+ *   PA9  USART1 TX  - console/shell (board default, dev builds only)
+ *   PA10 USART1 RX  - console/shell
+ *
+ * No free UART remains for the synapse telemetry radio (zros-serial): USART6
+ * sits on the USB pins on this board. Options: run flight builds with the
+ * shell disabled and point zros-serial at &usart1, or add USB CDC-ACM.
+ */
+
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+#include <zephyr/dt-bindings/sensor/icm42688.h>
+
+/ {
+	aliases {
+		imu0 = &icm42688;
+		rc = &crsf0;
+		motors = &pwm4;
+		/* no gnss: indoor micro quad, fix can be injected over telemetry */
+	};
+};
+
+/* IMU: ICM-42688-P on SPI1. To use a different sensor, change this child
+ * node's compatible/properties and the matching CONFIG_* in the .conf —
+ * the driver must support the sensor streaming (RTIO) API, since
+ * imu_stream.c paces the rate loop from the data-ready interrupt.
+ */
+&spi1 {
+	status = "okay";
+	/* CS as GPIO instead of the board's hardware-NSS pinmux */
+	pinctrl-0 = <&spi1_sck_pa5 &spi1_miso_pa6 &spi1_mosi_pa7>;
+	pinctrl-names = "default";
+	cs-gpios = <&gpioa 4 GPIO_ACTIVE_LOW>;
+
+	icm42688: icm42688@0 {
+		compatible = "invensense,icm42688", "invensense,icm4268x";
+		reg = <0>;
+		spi-max-frequency = <8000000>;
+		int-gpios = <&gpiob 0 GPIO_ACTIVE_HIGH>;
+		accel-odr = <6>;	/* 1 kHz */
+		gyro-odr = <6>;		/* 1 kHz */
+		accel-fs = <0>;		/* +/-16 g */
+		gyro-fs = <0>;		/* +/-2000 dps */
+	};
+};
+
+/* Motors: TIM4 CH1-4 as plain 400 Hz PWM (motor_output.c falls back to the
+ * generic PWM API when no DShot device exists). PB8/PB9 belong to I2C1 on
+ * the stock board, so it is disabled; a baro would go on I2C2 (PB10/PB3)
+ * or I2C3 (PA8/PB4) instead.
+ */
+&i2c1 {
+	status = "disabled";
+};
+
+&timers4 {
+	status = "okay";
+
+	pwm4: pwm {
+		status = "okay";
+		pinctrl-0 = <&tim4_ch1_pb6 &tim4_ch2_pb7
+			     &tim4_ch3_pb8 &tim4_ch4_pb9>;
+		pinctrl-names = "default";
+	};
+};
+
+/* RC input: CRSF (ELRS/Crossfire receiver) on USART2. The chan_N nodes map
+ * CRSF channels to Zephyr input codes consumed by rc_input.c; the mapping
+ * mirrors mr_vmu_tropic. SBUS or PPM receivers would replace this child node
+ * with the corresponding input driver binding.
+ */
+&usart2 {
+	status = "okay";
+	pinctrl-0 = <&usart2_tx_pa2 &usart2_rx_pa3>;
+	pinctrl-names = "default";
+	current-speed = <420000>;
+
+	crsf0: crsf {
+		compatible = "tbs,crsf";
+
+		chan_1 { channel = <1>; type = <INPUT_EV_ABS>; zephyr,code = <1>; };
+		chan_2 { channel = <2>; type = <INPUT_EV_ABS>; zephyr,code = <2>; };
+		chan_3 { channel = <3>; type = <INPUT_EV_ABS>; zephyr,code = <3>; };
+		chan_4 { channel = <4>; type = <INPUT_EV_ABS>; zephyr,code = <4>; };
+		chan_5 { channel = <5>; type = <INPUT_EV_ABS>; zephyr,code = <5>; };
+		chan_6 { channel = <6>; type = <INPUT_EV_ABS>; zephyr,code = <6>; };
+		chan_7 { channel = <7>; type = <INPUT_EV_ABS>; zephyr,code = <7>; };
+		chan_8 { channel = <8>; type = <INPUT_EV_ABS>; zephyr,code = <8>; };
+	};
+};

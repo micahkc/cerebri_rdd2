@@ -151,7 +151,7 @@ uint64_t rdd2_motor_output_write_all(const rdd2_motor_values_t *motors,
   for (size_t i = 0; i < 4U; i++) {
     applied_values[i] =
         armed ? clampf(motor_values[i], min_output, 1.0f) : 0.0f;
-    pwm_set(DEVICE_DT_GET(MOTOR_NODE), i, PWM_HZ(PWM_FREQ), PWM_HZ(PWM_FREQ) / UINT16_MAX * applied_values[i], PWM_POLARITY_NORMAL);
+    pwm_set(DEVICE_DT_GET(MOTOR_NODE), i + CONFIG_RDD2_PWM_FIRST_CHANNEL, PWM_HZ(PWM_FREQ), PWM_HZ(PWM_FREQ) / UINT16_MAX * applied_values[i], PWM_POLARITY_NORMAL);
   }
 #endif
 
@@ -201,7 +201,7 @@ uint64_t rdd2_motor_output_write_all_raw(const rdd2_motor_raw_t *raw,
   for (size_t i = 0; i < 4U; i++) {
     applied_values[i] =
         armed ? clampf(raw_values[i], 0.0f, 1.0f) : 0.0f;
-    pwm_set(DEVICE_DT_GET(MOTOR_NODE), i, PWM_HZ(PWM_FREQ), PWM_HZ(PWM_FREQ) * applied_values[i], PWM_POLARITY_NORMAL);
+    pwm_set(DEVICE_DT_GET(MOTOR_NODE), i + CONFIG_RDD2_PWM_FIRST_CHANNEL, PWM_HZ(PWM_FREQ), PWM_HZ(PWM_FREQ) * applied_values[i], PWM_POLARITY_NORMAL);
   }
 #endif
 
