@@ -1,11 +1,11 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * Micro-quad carrier for the WeAct Black Pill F411CE (board rev B).
+ * Micro-quad carrier for the WeAct Black Pill F411CE (schematic rev 3,
+ * verified against the traced KiCad netlist 2026-08-11).
  *
- * Matches the rev-B schematic: BMI270 on SPI1, ESP32-C3 link on USART2,
- * four brushed DC motors through two DRV8833 H-bridges spanning TIM3 and
- * TIM1, shared NSLEEP on PA8, shared open-drain FAULT on PA1, battery
- * divider on PB0. PROVISIONAL until the rev-B netlist export is verified.
+ * BMI270 on SPI1, ESP32-C3 WiFi bridge on USART2, four brushed DC motors
+ * through two DRV8833 H-bridges spanning TIM3/TIM2/TIM1, shared NSLEEP on
+ * PA8, shared open-drain FAULT on PA1, battery divider on PB0.
  *
  * This overlay is the single place that says WHICH sensors/actuators are
  * connected and WHERE. The application only consumes the aliases below;
@@ -14,18 +14,19 @@
  * Pin budget:
  *   PA4  SPI1 CS      - BMI270 chip select (GPIO, active low)
  *   PA5/PA6/PA7 SPI1  - BMI270 SCK/MISO/MOSI
- *   PB5  EXTI         - BMI270 INT1 (data-ready, paces the rate loop)
- *   PB4  TIM3_CH1     - M1 PWM       PB3  GPIO low - M1 companion (U4 IN3)
- *   PB1  TIM3_CH4     - M2 PWM       PB2  GPIO low - M2 companion (U4 IN1)
- *   PB15 TIM1_CH3N    - M3 PWM       PB14 GPIO low - M3 companion (U5 IN3)
- *   PB13 TIM1_CH1N    - M4 PWM       PB12 GPIO low - M4 companion (U5 IN1)
+ *   PB10 EXTI         - BMI270 INT1 (data-ready, paces the rate loop)
+ *   PB5  TIM3_CH2     - M1 PWM (U4 IN4)   PB4  GPIO low - companion (U4 IN3)
+ *   PB3  TIM2_CH2     - M2 PWM (U4 IN2)   PB1  GPIO low - companion (U4 IN1)
+ *   PB15 TIM1_CH3N    - M3 PWM (U5 IN4)   PB14 GPIO low - companion (U5 IN3)
+ *   PB13 TIM1_CH1N    - M4 PWM (U5 IN2)   PB12 GPIO low - companion (U5 IN1)
  *   PA8  GPIO         - DRV8833 NSLEEP (both drivers)
  *   PA1  GPIO in      - DRV8833 FAULT (open drain, 10k pull-up)
- *   PB0  ADC1_IN8     - battery divider (100k / 33k)
+ *   PB0  ADC1_IN8     - battery divider (100k / 100k, filtered)
  *   PA2/PA3 USART2    - ESP32-C3 WiFi bridge (synapse serial at 921600)
- *   PA9/PA10 USART1   - console/shell header
+ *   PA9/PA10 USART1   - console/shell (on the module's own header)
  *   PA11/PA12 USB     - free (module USB-C usable)
- *   PB6/PB7 I2C1      - free, expansion connector
+ *   PB2  BOOT1        - unused (kept clear of the motor bank)
+ *   PB6/PB7 I2C1      - free, labeled SCL/SDA for expansion
  */
 
 #include <zephyr/dt-bindings/adc/adc.h>
@@ -55,15 +56,15 @@
 	 * TIM1 outputs are on complementary CHxN pins, hence the flag. */
 	quad_motors: quad_motors {
 		compatible = "cognipilot,pwm-motors";
-		pwms = <&motor_pwm3 1 PWM_KHZ(20) PWM_POLARITY_NORMAL>,
-		       <&motor_pwm3 4 PWM_KHZ(20) PWM_POLARITY_NORMAL>,
+		pwms = <&motor_pwm3 2 PWM_KHZ(20) PWM_POLARITY_NORMAL>,
+		       <&motor_pwm2 2 PWM_KHZ(20) PWM_POLARITY_NORMAL>,
 		       <&motor_pwm1 3 PWM_KHZ(20) STM32_PWM_COMPLEMENTARY>,
 		       <&motor_pwm1 1 PWM_KHZ(20) STM32_PWM_COMPLEMENTARY>;
 		enable-gpios = <&gpioa 8 GPIO_ACTIVE_HIGH>;
 		fault-gpios = <&gpioa 1 GPIO_ACTIVE_LOW>;
 		/* H-bridge partner inputs, held physically low (fast decay). */
-		companion-gpios = <&gpiob 3 GPIO_ACTIVE_HIGH>,
-				  <&gpiob 2 GPIO_ACTIVE_HIGH>,
+		companion-gpios = <&gpiob 4 GPIO_ACTIVE_HIGH>,
+				  <&gpiob 1 GPIO_ACTIVE_HIGH>,
 				  <&gpiob 14 GPIO_ACTIVE_HIGH>,
 				  <&gpiob 12 GPIO_ACTIVE_HIGH>;
 	};
@@ -71,8 +72,8 @@
 	vbat_divider: vbat_divider {
 		compatible = "voltage-divider";
 		io-channels = <&adc1 8>;
-		full-ohms = <133000>;
-		output-ohms = <33000>;
+		full-ohms = <200000>;
+		output-ohms = <100000>;
 	};
 };
 
@@ -88,7 +89,7 @@
 		compatible = "bosch,bmi270";
 		reg = <0>;
 		spi-max-frequency = <8000000>;
-		irq-gpios = <&gpiob 5 GPIO_ACTIVE_HIGH>;
+		irq-gpios = <&gpiob 10 GPIO_ACTIVE_HIGH>;
 	};
 };
 
@@ -98,7 +99,18 @@
 
 	motor_pwm3: pwm {
 		status = "okay";
-		pinctrl-0 = <&tim3_ch1_pb4 &tim3_ch4_pb1>;
+		pinctrl-0 = <&tim3_ch2_pb5>;
+		pinctrl-names = "default";
+	};
+};
+
+&timers2 {
+	status = "okay";
+	st,prescaler = <0>;
+
+	motor_pwm2: pwm {
+		status = "okay";
+		pinctrl-0 = <&tim2_ch2_pb3>;
 		pinctrl-names = "default";
 	};
 };
