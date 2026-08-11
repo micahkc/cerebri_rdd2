@@ -5,6 +5,19 @@ config TOP_SHELL
     depends on SHELL
     default y
 
+config RDD2_RC_SYNAPSE
+    bool "RC from the ManualControl topic over the serial transport"
+    depends on RDD2_ZROS_SERIAL
+    depends on INPUT
+    help
+      Accept ManualControlData frames on the synapse serial link and
+      replay them as input events on the cognipilot,synapse-rc device
+      named by the rc alias. This is the RC path for a ground station
+      link (e.g. WiFi through a UART bridge) with no hardware receiver;
+      rc_input.c and the arming/staleness logic are unchanged. The RC
+      failsafe is the existing staleness timeout, so the ground station
+      must send at a fixed cadence.
+
 config RDD2_IMU_TRIGGER
     bool "Data-ready trigger IMU acquisition"
     depends on SENSOR

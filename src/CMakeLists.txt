@@ -22,6 +22,8 @@ target_sources_ifdef(CONFIG_TOP_SHELL app PRIVATE
   top_shell.c
 )
 
+target_sources_ifdef(CONFIG_RDD2_RC_SYNAPSE app PRIVATE rc_synapse.c)
+
 target_sources_ifdef(CONFIG_RDD2_FASTDYN app PRIVATE fastdyn_board.c)
 
 if(CONFIG_RDD2_FASTDYN)

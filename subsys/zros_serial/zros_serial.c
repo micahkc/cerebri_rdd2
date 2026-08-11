@@ -5,6 +5,9 @@
 #include "zros_serial.h"
 
 #include "topic_bus.h"
+#if defined(CONFIG_RDD2_RC_SYNAPSE)
+#include "rc_synapse.h"
+#endif
 
 #include <string.h>
 
@@ -111,6 +114,11 @@ struct serial_topic {
 	bool rx;
 	struct zros_pub *pub;
 	void *msg;
+	/* Alternative inbound delivery: a decoder invoked in transport-thread
+	 * context instead of an identity copy into a zros topic. Entries with
+	 * a handler carry no topic and skip the bus-size contract check; the
+	 * payload is still validated against the catalog size. */
+	void (*rx_handler)(const uint8_t *payload, size_t len);
 	/* Resolved from the catalog at init. */
 	uint16_t id;
 	uint16_t payload_size;
@@ -129,6 +137,11 @@ static synapse_topic_GnssFixData_t g_gnss_msg;
 #endif
 
 static struct serial_topic g_topics[] = {
+#if defined(CONFIG_RDD2_RC_SYNAPSE)
+	/* Inbound RC: decoded straight to the synapse-rc input device rather
+	 * than published; the wire struct and the bus RC struct differ. */
+	{.key = "manual", .rx = true, .rx_handler = rdd2_rc_synapse_rx},
+#endif
 	{.key = "health", .topic = &topic_vehicle_health, .tx = true},
 	{.key = "att", .topic = &topic_attitude_estimate, .tx = true},
 	{.key = "att_sp", .topic = &topic_attitude_command, .tx = true},
@@ -286,13 +299,19 @@ static void rx_deliver(void)
 		return;
 	}
 
-	if (!entry->rx || entry->pub == NULL) {
+	if (!entry->rx || (entry->pub == NULL && entry->rx_handler == NULL)) {
 		g_stats.rx_wrong_direction++;
 		return;
 	}
 
 	if ((size_t)g_rx_len != entry->payload_size) {
 		g_stats.rx_bad_length++;
+		return;
+	}
+
+	if (entry->rx_handler != NULL) {
+		entry->rx_handler(g_rx_payload, g_rx_len);
+		g_stats.rx_frames++;
 		return;
 	}
 
@@ -594,7 +613,7 @@ static int topics_resolve(void)
 			return -ENOENT;
 		}
 
-		if (info->payload_size != (size_t)entry->topic->_size) {
+		if (entry->topic != NULL && info->payload_size != (size_t)entry->topic->_size) {
 			LOG_ERR("\"%s\" is %u bytes on the bus, %u in the catalog", entry->key,
 				(unsigned int)entry->topic->_size,
 				(unsigned int)info->payload_size);
@@ -624,7 +643,7 @@ static int publishers_init(void)
 	for (size_t i = 0U; i < TOPIC_COUNT; i++) {
 		struct serial_topic *entry = &g_topics[i];
 
-		if (!entry->rx) {
+		if (!entry->rx || entry->rx_handler != NULL) {
 			continue;
 		}
 

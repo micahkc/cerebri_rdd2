@@ -22,24 +22,32 @@
  *   PA8  GPIO         - DRV8833 NSLEEP (both drivers)
  *   PA1  GPIO in      - DRV8833 FAULT (open drain, 10k pull-up)
  *   PB0  ADC1_IN8     - battery divider (100k / 33k)
- *   PA2/PA3 USART2    - ESP32-C3 (CRSF at 420 kBd)
+ *   PA2/PA3 USART2    - ESP32-C3 WiFi bridge (synapse serial at 921600)
  *   PA9/PA10 USART1   - console/shell header
  *   PA11/PA12 USB     - free (module USB-C usable)
  *   PB6/PB7 I2C1      - free, expansion connector
  */
 
 #include <zephyr/dt-bindings/adc/adc.h>
-#include <zephyr/dt-bindings/input/input-event-codes.h>
 #include <zephyr/dt-bindings/pwm/pwm.h>
 #include <zephyr/dt-bindings/pwm/stm32_pwm.h>
 
 / {
 	aliases {
 		imu0 = &bmi270;
-		rc = &crsf0;
+		rc = &synapse_rc0;
 		motors = &quad_motors;
 		vbat = &vbat_divider;
+		zros-serial = &usart2;
 		/* no gnss: indoor micro quad, fix injectable over telemetry */
+	};
+
+	/* RC arrives as ManualControl frames on the same synapse serial link
+	 * that carries telemetry (CONFIG_RDD2_RC_SYNAPSE); this virtual
+	 * device is what rc_input.c listens to. */
+	synapse_rc0: synapse_rc {
+		compatible = "cognipilot,synapse-rc";
+		status = "okay";
 	};
 
 	/* Mixer order m1..m4. 20 kHz keeps brushed drive above audible and
@@ -124,24 +132,12 @@
 	};
 };
 
-/* RC input: CRSF from the ESP32-C3 (e.g. ELRS receiver firmware) on USART2.
- * The chan_N nodes map CRSF channels to Zephyr input codes for rc_input.c. */
+/* The ESP32-C3 WiFi bridge on USART2 carries the synapse serial framing
+ * both ways: telemetry topics out, ManualControl (RC) and injected fixes
+ * in. The ESP32 is a transparent UART<->UDP bridge and never parses this. */
 &usart2 {
 	status = "okay";
 	pinctrl-0 = <&usart2_tx_pa2 &usart2_rx_pa3>;
 	pinctrl-names = "default";
-	current-speed = <420000>;
-
-	crsf0: crsf {
-		compatible = "tbs,crsf";
-
-		chan_1 { channel = <1>; type = <INPUT_EV_ABS>; zephyr,code = <1>; };
-		chan_2 { channel = <2>; type = <INPUT_EV_ABS>; zephyr,code = <2>; };
-		chan_3 { channel = <3>; type = <INPUT_EV_ABS>; zephyr,code = <3>; };
-		chan_4 { channel = <4>; type = <INPUT_EV_ABS>; zephyr,code = <4>; };
-		chan_5 { channel = <5>; type = <INPUT_EV_ABS>; zephyr,code = <5>; };
-		chan_6 { channel = <6>; type = <INPUT_EV_ABS>; zephyr,code = <6>; };
-		chan_7 { channel = <7>; type = <INPUT_EV_ABS>; zephyr,code = <7>; };
-		chan_8 { channel = <8>; type = <INPUT_EV_ABS>; zephyr,code = <8>; };
-	};
+	current-speed = <921600>;
 };

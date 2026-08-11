@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Virtual RC input device fed from inbound ManualControl frames on the
+  synapse serial transport (CONFIG_RDD2_RC_SYNAPSE). Point the rc alias at
+  this node when the RC link is the ground station rather than a hardware
+  receiver.
+
+compatible: "cognipilot,synapse-rc"
+
+include: base.yaml
