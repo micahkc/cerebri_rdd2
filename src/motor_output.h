@@ -11,6 +11,7 @@
 
 void rdd2_motor_output_init(void);
 bool rdd2_motor_output_ready(void);
+bool rdd2_motor_output_fault_active(void);
 
 uint64_t rdd2_motor_output_write_all(const rdd2_motor_values_t *motors, bool armed,
 				     bool test_mode);

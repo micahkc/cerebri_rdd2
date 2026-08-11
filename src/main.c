@@ -11,6 +11,7 @@
 #include "imu_stream.h"
 #include "motor_output.h"
 #include "rate_control.h"
+#include "rdd2_battery.h"
 #include "topic_bus.h"
 
 #include <stdbool.h>
@@ -261,7 +262,9 @@ int main(void) {
     if (!ctx->status.imu_ok || ctx->rc_stale || !ctx->status.arm_switch) {
       ctx->status.armed = false;
     } else if (!ctx->status.armed &&
-               ctx->status.throttle_us <= RDD2_THROTTLE_ARM_MAX) {
+               ctx->status.throttle_us <= RDD2_THROTTLE_ARM_MAX &&
+               !(IS_ENABLED(CONFIG_RDD2_BATTERY_ARM_GATE) &&
+                 rdd2_battery_low())) {
       ctx->status.armed = true;
     }
 

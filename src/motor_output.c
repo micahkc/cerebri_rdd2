@@ -8,10 +8,13 @@
 #include "topic_bus.h"
 
 #include <zephyr/device.h>
+#include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/misc/nxp_flexio_dshot/nxp_flexio_dshot.h>
 #include <zephyr/drivers/pwm.h>
 #include <zephyr/kernel.h>
+#include <zephyr/logging/log.h>
 #include <zephyr/sys/atomic.h>
+#include <zephyr/sys/util.h>
 
 #include <zros/private/zros_node_struct.h>
 #include <zros/private/zros_pub_struct.h>
@@ -20,11 +23,20 @@
 
 #include <csyn/csyn.h>
 
-#if defined (CONFIG_PWM)
-#define PWM_FREQ CONFIG_PWM_FREQUENCY
-#endif
+LOG_MODULE_DECLARE(rdd2, LOG_LEVEL_INF);
 
 #define MOTOR_NODE DT_ALIAS(motors)
+
+/* Per-motor PWM bank (cognipilot,pwm-motors): each motor carries its own
+ * controller/channel/period/flags spec, so the bank may span timers and mix
+ * polarity or complementary outputs. Never active in lockstep, where motor
+ * values only cross the simulator topic boundary. */
+#if DT_NODE_HAS_COMPAT(MOTOR_NODE, cognipilot_pwm_motors) &&                   \
+    defined(CONFIG_PWM) && !defined(CONFIG_RDD2_LOCKSTEP)
+#define RDD2_MOTORS_PWM_ARRAY 1
+#else
+#define RDD2_MOTORS_PWM_ARRAY 0
+#endif
 
 static atomic_t g_motor_test_active;
 static rdd2_motor_values_t g_motor_test_values;
@@ -78,6 +90,100 @@ static uint16_t motor_to_dshot(float normalized, bool armed) {
   return (uint16_t)(DSHOT_MIN + (clamped * span) + 0.5f);
 }
 
+#if RDD2_MOTORS_PWM_ARRAY
+
+#define MOTOR_PWM_SPEC(idx, _) PWM_DT_SPEC_GET_BY_IDX(MOTOR_NODE, idx)
+static const struct pwm_dt_spec g_motor_pwm[4] = {LISTIFY(4, MOTOR_PWM_SPEC,
+                                                          (,))};
+
+#if DT_NODE_HAS_PROP(MOTOR_NODE, companion_gpios)
+#define MOTOR_COMPANION_SPEC(node, prop, idx)                                  \
+  GPIO_DT_SPEC_GET_BY_IDX(node, prop, idx)
+static const struct gpio_dt_spec g_motor_companion[] = {DT_FOREACH_PROP_ELEM_SEP(
+    MOTOR_NODE, companion_gpios, MOTOR_COMPANION_SPEC, (,))};
+#endif
+
+static const struct gpio_dt_spec g_motor_enable =
+    GPIO_DT_SPEC_GET_OR(MOTOR_NODE, enable_gpios, {0});
+static const struct gpio_dt_spec g_motor_fault =
+    GPIO_DT_SPEC_GET_OR(MOTOR_NODE, fault_gpios, {0});
+static bool g_motor_enable_active;
+static bool g_motor_fault_reported;
+
+static void motor_pwm_backend_init(void) {
+#if DT_NODE_HAS_PROP(MOTOR_NODE, companion_gpios)
+  for (size_t i = 0; i < ARRAY_SIZE(g_motor_companion); i++) {
+    (void)gpio_pin_configure_dt(&g_motor_companion[i], GPIO_OUTPUT_INACTIVE);
+  }
+#endif
+  if (g_motor_enable.port != NULL) {
+    (void)gpio_pin_configure_dt(&g_motor_enable, GPIO_OUTPUT_INACTIVE);
+  }
+  if (g_motor_fault.port != NULL) {
+    (void)gpio_pin_configure_dt(&g_motor_fault, GPIO_INPUT);
+  }
+  g_motor_enable_active = false;
+}
+
+static bool motor_pwm_backend_ready(void) {
+  for (size_t i = 0; i < 4U; i++) {
+    if (!pwm_is_ready_dt(&g_motor_pwm[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/* The power stage sleeps whenever the vehicle is disarmed: asserted only on
+ * writes that carry arming (or test) authority, dropped on every other. */
+static void motor_pwm_enable_set(bool active) {
+  if (g_motor_enable.port == NULL || active == g_motor_enable_active) {
+    return;
+  }
+  (void)gpio_pin_set_dt(&g_motor_enable, active ? 1 : 0);
+  g_motor_enable_active = active;
+}
+
+static void motor_pwm_fault_poll(void) {
+  bool faulted;
+
+  if (g_motor_fault.port == NULL) {
+    return;
+  }
+  faulted = gpio_pin_get_dt(&g_motor_fault) == 1;
+  if (faulted != g_motor_fault_reported) {
+    if (faulted) {
+      LOG_WRN("motor power stage fault asserted");
+    } else {
+      LOG_INF("motor power stage fault cleared");
+    }
+    g_motor_fault_reported = faulted;
+  }
+}
+
+static void motor_pwm_write(size_t i, float duty) {
+  const struct pwm_dt_spec *spec = &g_motor_pwm[i];
+  uint32_t pulse = (uint32_t)((float)spec->period * duty + 0.5f);
+
+  if (pulse > spec->period) {
+    pulse = spec->period;
+  }
+  (void)pwm_set_pulse_dt(spec, pulse);
+}
+
+bool rdd2_motor_output_fault_active(void) {
+  if (g_motor_fault.port == NULL) {
+    return false;
+  }
+  return gpio_pin_get_dt(&g_motor_fault) == 1;
+}
+
+#else
+
+bool rdd2_motor_output_fault_active(void) { return false; }
+
+#endif /* RDD2_MOTORS_PWM_ARRAY */
+
 static uint64_t motor_output_trigger_and_timestamp(void) {
 #if defined(CONFIG_RDD2_DSHOT) && !defined(CONFIG_RDD2_LOCKSTEP)
   const struct device *const dshot_dev = DEVICE_DT_GET(MOTOR_NODE);
@@ -91,6 +197,10 @@ static uint64_t motor_output_trigger_and_timestamp(void) {
 
 void rdd2_motor_output_init(void) {
   int rc;
+
+#if RDD2_MOTORS_PWM_ARRAY
+  motor_pwm_backend_init();
+#endif
 
   zros_node_init(&g_rdd2_motor_output_node, "rdd2_motor_output");
   rc = zros_pub_init(&g_rdd2_motor_output_pub, &g_rdd2_motor_output_node,
@@ -116,7 +226,11 @@ void rdd2_motor_output_init(void) {
 }
 
 bool rdd2_motor_output_ready(void) {
+#if RDD2_MOTORS_PWM_ARRAY
+  return motor_pwm_backend_ready();
+#else
   return device_is_ready(DEVICE_DT_GET(MOTOR_NODE));
+#endif
 }
 
 uint64_t rdd2_motor_output_write_all(const rdd2_motor_values_t *motors,
@@ -136,7 +250,6 @@ uint64_t rdd2_motor_output_write_all(const rdd2_motor_values_t *motors,
   }
 #endif
 
-#if defined(CONFIG_RDD2_DSHOT) || defined(CONFIG_RDD2_LOCKSTEP)
   for (size_t i = 0; i < 4U; i++) {
     applied_values[i] =
         armed ? clampf(motor_values[i], min_output, 1.0f) : 0.0f;
@@ -147,11 +260,12 @@ uint64_t rdd2_motor_output_write_all(const rdd2_motor_values_t *motors,
                               false);
 #endif
   }
-#else
+
+#if RDD2_MOTORS_PWM_ARRAY
+  motor_pwm_enable_set(armed);
+  motor_pwm_fault_poll();
   for (size_t i = 0; i < 4U; i++) {
-    applied_values[i] =
-        armed ? clampf(motor_values[i], min_output, 1.0f) : 0.0f;
-    pwm_set(DEVICE_DT_GET(MOTOR_NODE), i + CONFIG_RDD2_PWM_FIRST_CHANNEL, PWM_HZ(PWM_FREQ), PWM_HZ(PWM_FREQ) / UINT16_MAX * applied_values[i], PWM_POLARITY_NORMAL);
+    motor_pwm_write(i, applied_values[i]);
   }
 #endif
 
@@ -174,7 +288,6 @@ uint64_t rdd2_motor_output_write_all_raw(const rdd2_motor_raw_t *raw,
   }
 #endif
 
-#if defined(CONFIG_RDD2_DSHOT) || defined(CONFIG_RDD2_LOCKSTEP)
   for (size_t i = 0; i < 4U; i++) {
     uint16_t value = raw_values[i];
 
@@ -197,11 +310,12 @@ uint64_t rdd2_motor_output_write_all_raw(const rdd2_motor_raw_t *raw,
     nxp_flexio_dshot_data_set(DEVICE_DT_GET(MOTOR_NODE), i, value, false);
 #endif
   }
-#else
+
+#if RDD2_MOTORS_PWM_ARRAY
+  motor_pwm_enable_set(armed);
+  motor_pwm_fault_poll();
   for (size_t i = 0; i < 4U; i++) {
-    applied_values[i] =
-        armed ? clampf(raw_values[i], 0.0f, 1.0f) : 0.0f;
-    pwm_set(DEVICE_DT_GET(MOTOR_NODE), i + CONFIG_RDD2_PWM_FIRST_CHANNEL, PWM_HZ(PWM_FREQ), PWM_HZ(PWM_FREQ) * applied_values[i], PWM_POLARITY_NORMAL);
+    motor_pwm_write(i, applied_values[i]);
   }
 #endif
 

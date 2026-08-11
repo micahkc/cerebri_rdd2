@@ -5,6 +5,7 @@
 #include "control_io.h"
 
 #include "imu_stream.h"
+#include "motor_output.h"
 #include "rc_input.h"
 
 #include <errno.h>
@@ -34,7 +35,6 @@ int rdd2_control_io_init(void)
 {
 	const struct device *const rc_dev = DEVICE_DT_GET(RC_NODE);
 	const struct device *const imu_dev = DEVICE_DT_GET(IMU_NODE);
-	const struct device *const motor_dev = DEVICE_DT_GET(MOTOR_NODE);
 
 	rdd2_rc_input_init();
 
@@ -45,23 +45,23 @@ int rdd2_control_io_init(void)
 	 * subsys/gnss_source, which reports through `gnss status`. */
 
 #if defined(CONFIG_RDD2_DSHOT)
-	if (!ready_or_log(motor_dev, "dshot")) {
-		return -ENODEV;
-	}
+	{
+		const struct device *const motor_dev = DEVICE_DT_GET(MOTOR_NODE);
 
-	if (nxp_flexio_dshot_channel_count(motor_dev) != 4U) {
-		LOG_ERR("expected 4 dshot channels");
-		return -EINVAL;
-	}
-#elif defined(CONFIG_PWM)
-	if (!device_is_ready(motor_dev)) {
-		LOG_ERR("PWM device not found!");
-		return -EINVAL;
+		if (!ready_or_log(motor_dev, "dshot")) {
+			return -ENODEV;
+		}
+
+		if (nxp_flexio_dshot_channel_count(motor_dev) != 4U) {
+			LOG_ERR("expected 4 dshot channels");
+			return -EINVAL;
+		}
 	}
 #else
-
-#pragma message( "Using Virtual Output" )
-
+	if (!rdd2_motor_output_ready()) {
+		LOG_ERR("motor outputs not ready");
+		return -ENODEV;
+	}
 #endif
 
 	return rdd2_imu_stream_init();

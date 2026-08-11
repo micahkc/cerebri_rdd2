@@ -1,95 +1,131 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * WeAct Black Pill F411CE micro-quad wiring.
+ * Micro-quad carrier for the WeAct Black Pill F411CE (board rev B).
  *
- * This overlay is the single place that says WHICH sensors and actuators are
- * connected and on WHAT bus/pins. The application only consumes the aliases
- * below (imu0, rc, motors, gnss, zros-serial); swap the nodes they point at
- * to change hardware without touching any C code. Driver enablement and
- * tuning (stack sizes, streaming mode) live in blackpill_f411ce.conf next to
- * this file.
+ * Matches the rev-B schematic: BMI270 on SPI1, ESP32-C3 link on USART2,
+ * four brushed DC motors through two DRV8833 H-bridges spanning TIM3 and
+ * TIM1, shared NSLEEP on PA8, shared open-drain FAULT on PA1, battery
+ * divider on PB0. PROVISIONAL until the rev-B netlist export is verified.
  *
- * Pin budget on the Black Pill:
- *   PA4  SPI1 CS    - IMU chip select (GPIO, active low)
- *   PA5  SPI1 SCK   - IMU
- *   PA6  SPI1 MISO  - IMU
- *   PA7  SPI1 MOSI  - IMU
- *   PB0  EXTI       - IMU INT1 (data-ready, paces the rate loop)
- *   PB6  TIM4 CH1   - motor 1 (PWM 400 Hz; see CONFIG_PWM_FREQUENCY)
- *   PB7  TIM4 CH2   - motor 2
- *   PB8  TIM4 CH3   - motor 3 (frees I2C1, disabled below)
- *   PB9  TIM4 CH4   - motor 4
- *   PA2  USART2 TX  - CRSF telemetry back to the RC receiver
- *   PA3  USART2 RX  - CRSF RC input, 420 kBd
- *   PA9  USART1 TX  - console/shell (board default, dev builds only)
- *   PA10 USART1 RX  - console/shell
+ * This overlay is the single place that says WHICH sensors/actuators are
+ * connected and WHERE. The application only consumes the aliases below;
+ * driver enablement and tuning live in blackpill_f411ce.conf.
  *
- * No free UART remains for the synapse telemetry radio (zros-serial): USART6
- * sits on the USB pins on this board. Options: run flight builds with the
- * shell disabled and point zros-serial at &usart1, or add USB CDC-ACM.
+ * Pin budget:
+ *   PA4  SPI1 CS      - BMI270 chip select (GPIO, active low)
+ *   PA5/PA6/PA7 SPI1  - BMI270 SCK/MISO/MOSI
+ *   PB5  EXTI         - BMI270 INT1 (data-ready, paces the rate loop)
+ *   PB4  TIM3_CH1     - M1 PWM       PB3  GPIO low - M1 companion (U4 IN3)
+ *   PB1  TIM3_CH4     - M2 PWM       PB2  GPIO low - M2 companion (U4 IN1)
+ *   PB15 TIM1_CH3N    - M3 PWM       PB14 GPIO low - M3 companion (U5 IN3)
+ *   PB13 TIM1_CH1N    - M4 PWM       PB12 GPIO low - M4 companion (U5 IN1)
+ *   PA8  GPIO         - DRV8833 NSLEEP (both drivers)
+ *   PA1  GPIO in      - DRV8833 FAULT (open drain, 10k pull-up)
+ *   PB0  ADC1_IN8     - battery divider (100k / 33k)
+ *   PA2/PA3 USART2    - ESP32-C3 (CRSF at 420 kBd)
+ *   PA9/PA10 USART1   - console/shell header
+ *   PA11/PA12 USB     - free (module USB-C usable)
+ *   PB6/PB7 I2C1      - free, expansion connector
  */
 
+#include <zephyr/dt-bindings/adc/adc.h>
 #include <zephyr/dt-bindings/input/input-event-codes.h>
-#include <zephyr/dt-bindings/sensor/icm42688.h>
+#include <zephyr/dt-bindings/pwm/pwm.h>
+#include <zephyr/dt-bindings/pwm/stm32_pwm.h>
 
 / {
 	aliases {
-		imu0 = &icm42688;
+		imu0 = &bmi270;
 		rc = &crsf0;
-		motors = &pwm4;
-		/* no gnss: indoor micro quad, fix can be injected over telemetry */
+		motors = &quad_motors;
+		vbat = &vbat_divider;
+		/* no gnss: indoor micro quad, fix injectable over telemetry */
+	};
+
+	/* Mixer order m1..m4. 20 kHz keeps brushed drive above audible and
+	 * gives ~4800 counts of resolution at the 96 MHz timer clock. The
+	 * TIM1 outputs are on complementary CHxN pins, hence the flag. */
+	quad_motors: quad_motors {
+		compatible = "cognipilot,pwm-motors";
+		pwms = <&motor_pwm3 1 PWM_KHZ(20) PWM_POLARITY_NORMAL>,
+		       <&motor_pwm3 4 PWM_KHZ(20) PWM_POLARITY_NORMAL>,
+		       <&motor_pwm1 3 PWM_KHZ(20) STM32_PWM_COMPLEMENTARY>,
+		       <&motor_pwm1 1 PWM_KHZ(20) STM32_PWM_COMPLEMENTARY>;
+		enable-gpios = <&gpioa 8 GPIO_ACTIVE_HIGH>;
+		fault-gpios = <&gpioa 1 GPIO_ACTIVE_LOW>;
+		/* H-bridge partner inputs, held physically low (fast decay). */
+		companion-gpios = <&gpiob 3 GPIO_ACTIVE_HIGH>,
+				  <&gpiob 2 GPIO_ACTIVE_HIGH>,
+				  <&gpiob 14 GPIO_ACTIVE_HIGH>,
+				  <&gpiob 12 GPIO_ACTIVE_HIGH>;
+	};
+
+	vbat_divider: vbat_divider {
+		compatible = "voltage-divider";
+		io-channels = <&adc1 8>;
+		full-ohms = <133000>;
+		output-ohms = <33000>;
 	};
 };
 
-/* IMU: ICM-42688-P on SPI1. To use a different sensor, change this child
- * node's compatible/properties and the matching CONFIG_* in the .conf —
- * the driver must support the sensor streaming (RTIO) API, since
- * imu_stream.c paces the rate loop from the data-ready interrupt.
- */
+/* IMU: BMI270, SPI mode, CS as GPIO. The data-ready interrupt on PB5 paces
+ * the control loop through the trigger backend (CONFIG_RDD2_IMU_TRIGGER). */
 &spi1 {
 	status = "okay";
-	/* CS as GPIO instead of the board's hardware-NSS pinmux */
 	pinctrl-0 = <&spi1_sck_pa5 &spi1_miso_pa6 &spi1_mosi_pa7>;
 	pinctrl-names = "default";
 	cs-gpios = <&gpioa 4 GPIO_ACTIVE_LOW>;
 
-	icm42688: icm42688@0 {
-		compatible = "invensense,icm42688", "invensense,icm4268x";
+	bmi270: bmi270@0 {
+		compatible = "bosch,bmi270";
 		reg = <0>;
 		spi-max-frequency = <8000000>;
-		int-gpios = <&gpiob 0 GPIO_ACTIVE_HIGH>;
-		accel-odr = <6>;	/* 1 kHz */
-		gyro-odr = <6>;		/* 1 kHz */
-		accel-fs = <0>;		/* +/-16 g */
-		gyro-fs = <0>;		/* +/-2000 dps */
+		irq-gpios = <&gpiob 5 GPIO_ACTIVE_HIGH>;
 	};
 };
 
-/* Motors: TIM4 CH1-4 as plain 400 Hz PWM (motor_output.c falls back to the
- * generic PWM API when no DShot device exists). PB8/PB9 belong to I2C1 on
- * the stock board, so it is disabled; a baro would go on I2C2 (PB10/PB3)
- * or I2C3 (PA8/PB4) instead.
- */
-&i2c1 {
-	status = "disabled";
-};
-
-&timers4 {
+&timers3 {
 	status = "okay";
+	st,prescaler = <0>;
 
-	pwm4: pwm {
+	motor_pwm3: pwm {
 		status = "okay";
-		pinctrl-0 = <&tim4_ch1_pb6 &tim4_ch2_pb7
-			     &tim4_ch3_pb8 &tim4_ch4_pb9>;
+		pinctrl-0 = <&tim3_ch1_pb4 &tim3_ch4_pb1>;
 		pinctrl-names = "default";
 	};
 };
 
-/* RC input: CRSF (ELRS/Crossfire receiver) on USART2. The chan_N nodes map
- * CRSF channels to Zephyr input codes consumed by rc_input.c; the mapping
- * mirrors mr_vmu_tropic. SBUS or PPM receivers would replace this child node
- * with the corresponding input driver binding.
- */
+&timers1 {
+	status = "okay";
+	st,prescaler = <0>;
+
+	motor_pwm1: pwm {
+		status = "okay";
+		pinctrl-0 = <&tim1_ch1n_pb13 &tim1_ch3n_pb15>;
+		pinctrl-names = "default";
+	};
+};
+
+&adc1 {
+	status = "okay";
+	pinctrl-0 = <&adc1_in8_pb0>;
+	pinctrl-names = "default";
+	st,adc-clock-source = "SYNC";
+	st,adc-prescaler = <4>;
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	channel@8 {
+		reg = <8>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+		zephyr,resolution = <12>;
+	};
+};
+
+/* RC input: CRSF from the ESP32-C3 (e.g. ELRS receiver firmware) on USART2.
+ * The chan_N nodes map CRSF channels to Zephyr input codes for rc_input.c. */
 &usart2 {
 	status = "okay";
 	pinctrl-0 = <&usart2_tx_pa2 &usart2_rx_pa3>;

@@ -5,20 +5,25 @@ config TOP_SHELL
     depends on SHELL
     default y
 
-config PWM_FREQUENCY
-    int "PWM motors frequency in Hz"
-    depends on PWM
-    default 400
-
-config RDD2_PWM_FIRST_CHANNEL
-    int "PWM channel number of the first motor output"
-    depends on PWM
-    range 0 1
-    default 0
+config RDD2_IMU_TRIGGER
+    bool "Data-ready trigger IMU acquisition"
+    depends on SENSOR
     help
-      Motor N is driven on PWM channel N plus this offset. Controllers
-      with zero-based channels (native_sim) use 0; STM32 timers number
-      their channels from 1.
+      Pace the control loop from the IMU's data-ready trigger through the
+      classic fetch/get sensor API, for IMU drivers without sensor
+      streaming (RTIO) support such as the BMI270. The trigger handler
+      reads the sample in driver context and queues it for the control
+      thread.
+
+config RDD2_IMU_TRIGGER_ODR_HZ
+    int "IMU output data rate for the trigger backend in Hz"
+    depends on RDD2_IMU_TRIGGER
+    default 800
+    help
+      Requested accelerometer and gyroscope sampling frequency. The
+      data-ready rate is the control loop rate. Drivers that do not
+      accept the request keep their default rate; the loop adapts via
+      measured dt either way.
     
 menu "RDD2"
 

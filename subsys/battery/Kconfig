@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: Apache-2.0
+
+config RDD2_BATTERY
+    bool "Battery voltage monitor"
+    depends on ADC
+    help
+      Sample the battery voltage divider on the vbat devicetree alias
+      (a voltage-divider node) at low rate and publish it through
+      vehicle_health as voltage_battery_cv plus a linear remaining-charge
+      estimate. Exposes rdd2_battery_low() for the arming gate.
+
+if RDD2_BATTERY
+
+config RDD2_BATTERY_FULL_MV
+    int "Battery voltage considered 100% in mV"
+    default 4200
+
+config RDD2_BATTERY_EMPTY_MV
+    int "Battery voltage considered 0% in mV"
+    default 3300
+
+config RDD2_BATTERY_LOW_MV
+    int "Low-battery threshold in mV"
+    default 3450
+    help
+      rdd2_battery_low() reports true after the voltage has stayed below
+      this threshold for several consecutive samples, so stick punches
+      and sag spikes do not flap the flag.
+
+config RDD2_BATTERY_ARM_GATE
+    bool "Refuse to arm while the battery is low"
+    help
+      Blocks new arming while rdd2_battery_low() reports true. Never
+      force-disarms in flight; recovery from in-flight sag is the
+      pilot's call. Leave disabled on bench boards without the divider
+      populated.
+
+endif

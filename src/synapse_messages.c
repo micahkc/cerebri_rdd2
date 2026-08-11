@@ -2,6 +2,8 @@
 
 #include "synapse_messages.h"
 
+#include "rdd2_battery.h"
+
 #include <math.h>
 #include <string.h>
 
@@ -51,6 +53,9 @@ void rdd2_topic_make_flight_state(rdd2_topic_flight_state_blob_t *output, const 
 			   synapse_topic_SensorComponentFlags_Estimator;
 	uint32_t healthy = synapse_topic_SensorComponentFlags_MotorOutputs |
 			   synapse_topic_SensorComponentFlags_Estimator;
+	uint16_t battery_cv;
+	int8_t battery_pct;
+	bool battery_valid;
 
 	if (status->imu_ok) {
 		healthy |= synapse_topic_SensorComponentFlags_Gyro |
@@ -60,12 +65,22 @@ void rdd2_topic_make_flight_state(rdd2_topic_flight_state_blob_t *output, const 
 		healthy |= synapse_topic_SensorComponentFlags_RadioControl;
 	}
 
+	rdd2_battery_health_get(&battery_cv, &battery_pct, &battery_valid);
+	if (battery_valid) {
+		sensors |= synapse_topic_SensorComponentFlags_Battery;
+		if (!rdd2_battery_low()) {
+			healthy |= synapse_topic_SensorComponentFlags_Battery;
+		}
+	}
+
 	memset(output, 0, sizeof(*output));
 	output->vehicle_health = (synapse_topic_VehicleHealthData_t){
 		.timestamp_us = now_us,
 		.sensors_present = sensors,
 		.sensors_enabled = sensors,
 		.sensors_health = healthy,
+		.voltage_battery_cv = battery_cv,
+		.battery_remaining_pct = battery_pct,
 		.flight_mode = status->flight_mode,
 		.link_quality_pct = status->rc_link_quality,
 		.flags = status->armed ? synapse_topic_VehicleHealthFlags_Armed : 0U,

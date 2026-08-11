@@ -35,7 +35,52 @@ static void imu_outputs_zero(rdd2_vec3f_t *gyro, rdd2_vec3f_t *accel)
 	*accel = (rdd2_vec3f_t){0};
 }
 
-#if DT_NODE_HAS_COMPAT(IMU_NODE, invensense_icm45686) && defined(CONFIG_SENSOR_ASYNC_API)
+/*
+ * Control code consumes IMU data in FLU body axes:
+ * body x (forward) <- sensor y
+ * body y (left)    <- -sensor x
+ * body z (up)      <- sensor z
+ */
+static void imu_sensor_axes_to_body(float gyro_x, float gyro_y, float gyro_z, float accel_x,
+				    float accel_y, float accel_z, rdd2_vec3f_t *gyro_out,
+				    rdd2_vec3f_t *accel_out)
+{
+	gyro_out->x = gyro_y;
+	gyro_out->y = -gyro_x;
+	gyro_out->z = gyro_z;
+
+	accel_out->x = accel_y;
+	accel_out->y = -accel_x;
+	accel_out->z = accel_z;
+}
+
+#if !defined(CONFIG_RDD2_LOCKSTEP) &&                                                              \
+	(defined(CONFIG_RDD2_IMU_TRIGGER) ||                                                       \
+	 !(DT_NODE_HAS_COMPAT(IMU_NODE, invensense_icm45686) && defined(CONFIG_SENSOR_ASYNC_API)))
+/* Classic fetch/get read shared by the trigger and polled backends. */
+static bool imu_fetch_convert(const struct device *dev, rdd2_vec3f_t *gyro_out,
+			      rdd2_vec3f_t *accel_out)
+{
+	struct sensor_value gyro[3];
+	struct sensor_value accel_values[3];
+
+	if (sensor_sample_fetch(dev) != 0 ||
+	    sensor_channel_get(dev, SENSOR_CHAN_GYRO_XYZ, gyro) != 0 ||
+	    sensor_channel_get(dev, SENSOR_CHAN_ACCEL_XYZ, accel_values) != 0) {
+		return false;
+	}
+
+	imu_sensor_axes_to_body(sensor_value_to_float(&gyro[0]), sensor_value_to_float(&gyro[1]),
+				sensor_value_to_float(&gyro[2]),
+				sensor_value_to_float(&accel_values[0]),
+				sensor_value_to_float(&accel_values[1]),
+				sensor_value_to_float(&accel_values[2]), gyro_out, accel_out);
+	return true;
+}
+#endif
+
+#if DT_NODE_HAS_COMPAT(IMU_NODE, invensense_icm45686) && defined(CONFIG_SENSOR_ASYNC_API) &&       \
+	!defined(CONFIG_RDD2_IMU_TRIGGER)
 
 SENSOR_DT_STREAM_IODEV(rdd2_imu_stream_iodev, IMU_NODE,
 		       {SENSOR_TRIG_DATA_READY, SENSOR_STREAM_DATA_INCLUDE});
@@ -61,26 +106,6 @@ static const struct sensor_chan_spec g_imu_gyro_chan = {
 	.chan_type = SENSOR_CHAN_GYRO_XYZ,
 	.chan_idx = 0,
 };
-
-static void imu_sensor_axes_to_body(float gyro_x, float gyro_y, float gyro_z, float accel_x,
-				    float accel_y, float accel_z, rdd2_vec3f_t *gyro_out,
-				    rdd2_vec3f_t *accel_out)
-{
-
-	/*
-	 * Control code consumes IMU data in FLU body axes:
-	 * body x (forward) <- sensor y
-	 * body y (left)    <- -sensor x
-	 * body z (up)      <- sensor z
-	 */
-	gyro_out->x = gyro_y;
-	gyro_out->y = -gyro_x;
-	gyro_out->z = gyro_z;
-
-	accel_out->x = accel_y;
-	accel_out->y = -accel_x;
-	accel_out->z = accel_z;
-}
 
 static float imu_q31_to_float(q31_t value, int8_t shift)
 {
@@ -296,6 +321,160 @@ bool rdd2_imu_stream_wait_next(rdd2_vec3f_t *gyro, rdd2_vec3f_t *accel, float *d
 	return true;
 }
 
+#elif defined(CONFIG_RDD2_IMU_TRIGGER) && !defined(CONFIG_RDD2_LOCKSTEP)
+
+/*
+ * Data-ready trigger backend for IMU drivers without sensor streaming (RTIO)
+ * support, e.g. the BMI270. The driver's trigger thread reads each sample over
+ * the bus and queues it; the control thread blocks on the queue exactly as it
+ * blocks on the RTIO completion queue in the streaming backend. dt comes from
+ * a wrap-safe 32-bit cycle delta stamped in the handler, so tick-rate
+ * granularity never quantizes the loop period.
+ */
+
+struct imu_trigger_sample {
+	rdd2_vec3f_t gyro;
+	rdd2_vec3f_t accel;
+	uint32_t cycles;
+	uint64_t timestamp_ns;
+};
+
+K_MSGQ_DEFINE(g_imu_trigger_msgq, sizeof(struct imu_trigger_sample), 4, 4);
+
+static const struct device *const g_imu_dev = DEVICE_DT_GET(IMU_NODE);
+static uint32_t g_last_sample_cycles;
+static bool g_have_last_sample;
+
+#define RDD2_IMU_WATCHDOG_MS 100
+
+static atomic_t g_imu_sample_count;
+static uint32_t g_imu_watchdog_last_count;
+static bool g_imu_watchdog_primed;
+
+static const struct sensor_trigger g_imu_data_ready_trigger = {
+	.type = SENSOR_TRIG_DATA_READY,
+	.chan = SENSOR_CHAN_ALL,
+};
+
+static void imu_trigger_handler(const struct device *dev, const struct sensor_trigger *trigger)
+{
+	struct imu_trigger_sample sample;
+
+	ARG_UNUSED(trigger);
+
+	if (!imu_fetch_convert(dev, &sample.gyro, &sample.accel)) {
+		return;
+	}
+
+	sample.cycles = k_cycle_get_32();
+	sample.timestamp_ns = k_ticks_to_ns_floor64(k_uptime_ticks());
+
+	if (k_msgq_put(&g_imu_trigger_msgq, &sample, K_NO_WAIT) != 0) {
+		/* The control thread fell behind: keep the newest sample. */
+		struct imu_trigger_sample dropped;
+
+		(void)k_msgq_get(&g_imu_trigger_msgq, &dropped, K_NO_WAIT);
+		(void)k_msgq_put(&g_imu_trigger_msgq, &sample, K_NO_WAIT);
+	}
+}
+
+static int imu_trigger_arm(void)
+{
+	return sensor_trigger_set(g_imu_dev, &g_imu_data_ready_trigger, imu_trigger_handler);
+}
+
+static void imu_watchdog_work(struct k_work *work)
+{
+	uint32_t count = (uint32_t)atomic_get(&g_imu_sample_count);
+
+	if (g_imu_watchdog_primed && count == g_imu_watchdog_last_count) {
+		int rc = imu_trigger_arm();
+
+		LOG_WRN("imu trigger re-armed by watchdog: %d", rc);
+		g_have_last_sample = false;
+	}
+
+	g_imu_watchdog_primed = (count != 0U);
+	g_imu_watchdog_last_count = count;
+	(void)k_work_reschedule(k_work_delayable_from_work(work), K_MSEC(RDD2_IMU_WATCHDOG_MS));
+}
+
+static K_WORK_DELAYABLE_DEFINE(g_imu_watchdog, imu_watchdog_work);
+
+static void imu_trigger_request_odr(void)
+{
+	struct sensor_value odr = {
+		.val1 = CONFIG_RDD2_IMU_TRIGGER_ODR_HZ,
+		.val2 = 0,
+	};
+	int rc;
+
+	rc = sensor_attr_set(g_imu_dev, SENSOR_CHAN_ACCEL_XYZ, SENSOR_ATTR_SAMPLING_FREQUENCY,
+			     &odr);
+	if (rc != 0) {
+		LOG_WRN("imu accel odr request failed: %d", rc);
+	}
+	rc = sensor_attr_set(g_imu_dev, SENSOR_CHAN_GYRO_XYZ, SENSOR_ATTR_SAMPLING_FREQUENCY, &odr);
+	if (rc != 0) {
+		LOG_WRN("imu gyro odr request failed: %d", rc);
+	}
+}
+
+int rdd2_imu_stream_init(void)
+{
+	int rc;
+
+	if (!device_is_ready(g_imu_dev)) {
+		return -ENODEV;
+	}
+
+	imu_trigger_request_odr();
+
+	rc = imu_trigger_arm();
+	if (rc != 0) {
+		LOG_ERR("imu trigger arm failed: %d", rc);
+		return rc;
+	}
+
+	(void)k_work_schedule(&g_imu_watchdog, K_MSEC(RDD2_IMU_WATCHDOG_MS));
+	return 0;
+}
+
+bool rdd2_imu_stream_wait_next(rdd2_vec3f_t *gyro, rdd2_vec3f_t *accel, float *dt,
+			       uint64_t *interrupt_timestamp_ns)
+{
+	struct imu_trigger_sample sample;
+
+	*dt = RDD2_CONTROL_DT_S;
+	if (interrupt_timestamp_ns != NULL) {
+		*interrupt_timestamp_ns = 0U;
+	}
+
+	if (k_msgq_get(&g_imu_trigger_msgq, &sample, K_FOREVER) != 0) {
+		imu_outputs_zero(gyro, accel);
+		return false;
+	}
+
+	if (g_have_last_sample) {
+		uint32_t delta_cycles = sample.cycles - g_last_sample_cycles;
+
+		if (delta_cycles > 0U) {
+			*dt = (float)delta_cycles / (float)sys_clock_hw_cycles_per_sec();
+		}
+	}
+	g_last_sample_cycles = sample.cycles;
+	g_have_last_sample = true;
+
+	*gyro = sample.gyro;
+	*accel = sample.accel;
+	if (interrupt_timestamp_ns != NULL) {
+		*interrupt_timestamp_ns = sample.timestamp_ns;
+	}
+
+	atomic_inc(&g_imu_sample_count);
+	return true;
+}
+
 #else
 
 #if defined(CONFIG_RDD2_LOCKSTEP)
@@ -364,42 +543,7 @@ static bool lockstep_wait_until_controller_tick_ready(void)
 #if !defined(CONFIG_RDD2_LOCKSTEP)
 static bool imu_fetch_sync(rdd2_vec3f_t *gyro_out, rdd2_vec3f_t *accel_out)
 {
-	const struct device *const imu_dev = DEVICE_DT_GET(IMU_NODE);
-	struct sensor_value gyro[3];
-	struct sensor_value accel_values[3];
-	float gyro_sensor[3];
-	float accel_sensor[3];
-	int rc;
-
-	rc = sensor_sample_fetch(imu_dev);
-	if (rc != 0) {
-		return false;
-	}
-
-	rc = sensor_channel_get(imu_dev, SENSOR_CHAN_GYRO_XYZ, gyro);
-	if (rc != 0) {
-		return false;
-	}
-
-	rc = sensor_channel_get(imu_dev, SENSOR_CHAN_ACCEL_XYZ, accel_values);
-	if (rc != 0) {
-		return false;
-	}
-
-	for (size_t i = 0; i < 3; i++) {
-		gyro_sensor[i] = sensor_value_to_float(&gyro[i]);
-		accel_sensor[i] = sensor_value_to_float(&accel_values[i]);
-	}
-
-	gyro_out->x = gyro_sensor[1];
-	gyro_out->y = -gyro_sensor[0];
-	gyro_out->z = gyro_sensor[2];
-
-	accel_out->x = accel_sensor[1];
-	accel_out->y = -accel_sensor[0];
-	accel_out->z = accel_sensor[2];
-
-	return true;
+	return imu_fetch_convert(DEVICE_DT_GET(IMU_NODE), gyro_out, accel_out);
 }
 #endif
 

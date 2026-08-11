@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Quad motor bank driven through per-motor PWM specifiers.
+
+  One pwms entry per motor, in mixer order (m1..m4). Each entry carries its
+  own controller, channel, period, and flags, so the four motors may span
+  multiple timers and mix polarity or complementary outputs, e.g.:
+
+    pwms = <&pwm3 1 PWM_HZ(400) PWM_POLARITY_NORMAL>,
+           <&pwm3 4 PWM_HZ(400) PWM_POLARITY_NORMAL>,
+           <&pwm1 3 PWM_HZ(400) STM32_PWM_COMPLEMENTARY>,
+           <&pwm1 1 PWM_HZ(400) STM32_PWM_COMPLEMENTARY>;
+
+  companion-gpios are driven to their logical INACTIVE state at init and left
+  there: for an H-bridge input that must sit low, list it GPIO_ACTIVE_HIGH;
+  for one that must sit high (slow-decay partner), list it GPIO_ACTIVE_LOW.
+
+  enable-gpios (e.g. DRV8833 NSLEEP) is asserted only while motors are
+  commanded with arming authority and deasserted on every disarmed write, so
+  the power stage sleeps whenever the vehicle is disarmed.
+
+  fault-gpios is sampled on each write; list it with the flags that make a
+  reported fault read as logical 1 (open-drain FAULT low-active is
+  GPIO_ACTIVE_LOW with a pull-up on the board).
+
+compatible: "cognipilot,pwm-motors"
+
+properties:
+  pwms:
+    type: phandle-array
+    required: true
+    description: One PWM specifier per motor, mixer order m1..m4.
+
+  enable-gpios:
+    type: phandle-array
+    description: Power-stage enable, asserted only while armed or testing.
+
+  fault-gpios:
+    type: phandle-array
+    description: Power-stage fault input, logical 1 when faulted.
+
+  companion-gpios:
+    type: phandle-array
+    description: Static H-bridge companion inputs, driven inactive at init.
