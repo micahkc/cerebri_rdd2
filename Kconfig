@@ -18,6 +18,27 @@ config RDD2_RC_SYNAPSE
       failsafe is the existing staleness timeout, so the ground station
       must send at a fixed cadence.
 
+config RDD2_IMU_TELEMETRY
+    bool "Stream decimated raw IMU samples over the serial link"
+    depends on RDD2_ZROS_SERIAL
+    help
+      Publish the control loop's raw gyro/accel samples (body FLU, SI
+      units) onto the inertial_sample topic and carry it over the
+      serial transport at its own rate, for estimator debugging and
+      vibration analysis from the ground station. Costs link bandwidth
+      and nothing else; disable for flight once tuning is done.
+
+config RDD2_IMU_TELEMETRY_DIV
+    int "Control cycles per transmitted IMU sample"
+    depends on RDD2_IMU_TELEMETRY
+    range 1 64
+    default 4
+    help
+      Every Nth control cycle publishes one raw sample: 4 at an 800 Hz
+      loop is 200 Hz on the wire (~13 KB/s framed), good for spectra to
+      100 Hz. The serial transport's poll period (5 ms default) is the
+      other rate ceiling.
+
 config RDD2_IMU_TRIGGER
     bool "Data-ready trigger IMU acquisition"
     depends on SENSOR

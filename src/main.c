@@ -63,6 +63,10 @@ static struct zros_pub g_rdd2_attitude_command_pub;
 static struct zros_pub g_rdd2_control_loop_metrics_pub;
 static RDD2_HOTPATH_DTCM_BSS rdd2_topic_flight_state_blob_t
     g_rdd2_flight_state_blob;
+#if defined(CONFIG_RDD2_IMU_TELEMETRY)
+static struct zros_pub g_rdd2_inertial_pub;
+static synapse_topic_InertialSampleData_t g_rdd2_inertial_msg;
+#endif
 #if defined(CONFIG_CSYN_ZENOH) && !defined(CONFIG_RDD2_LOCKSTEP)
 static struct csyn_topic *g_fastdyn_health_topic;
 #endif
@@ -111,6 +115,12 @@ static int flight_state_topic_init(void) {
                        &topic_control_loop_metrics,
                        &g_rdd2_flight_state_blob.control_loop_metrics);
   }
+#if defined(CONFIG_RDD2_IMU_TELEMETRY)
+  if (rc == 0) {
+    rc = zros_pub_init(&g_rdd2_inertial_pub, &g_rdd2_main_node,
+                       &topic_inertial_sample, &g_rdd2_inertial_msg);
+  }
+#endif
 #if defined(CONFIG_CSYN_ZENOH) && !defined(CONFIG_RDD2_LOCKSTEP)
   if (rc == 0) {
     g_fastdyn_health_topic = csyn_topic_find("health");
@@ -176,12 +186,42 @@ static uint32_t imu_to_motor_latency_us(uint64_t imu_interrupt_timestamp_ns,
   return (uint32_t)(latency_ns / 1000U);
 }
 
+/* Raw gyro/accel for ground-side estimator debugging and vibration analysis:
+ * exactly what the control loop consumed, decimated, in body FLU SI units. */
+static void publish_inertial_sample(const struct control_context *ctx,
+                                    uint64_t imu_interrupt_timestamp_ns) {
+#if defined(CONFIG_RDD2_IMU_TELEMETRY)
+  static uint32_t publish_countdown;
+
+  if (!ctx->status.imu_ok ||
+      !loop_divider_expired(&publish_countdown,
+                            CONFIG_RDD2_IMU_TELEMETRY_DIV)) {
+    return;
+  }
+
+  g_rdd2_inertial_msg = (synapse_topic_InertialSampleData_t){
+      .timestamp_us = imu_interrupt_timestamp_ns != 0U
+                          ? imu_interrupt_timestamp_ns / 1000U
+                          : (uint64_t)ctx->now_ms * 1000U,
+      .accel_flu_m_s2 = ctx->accel,
+      .gyro_flu_rad_s = ctx->gyro,
+      .flags = synapse_topic_InertialFieldFlags_Accel |
+               synapse_topic_InertialFieldFlags_Gyro,
+  };
+  (void)zros_pub_update(&g_rdd2_inertial_pub);
+#else
+  ARG_UNUSED(ctx);
+  ARG_UNUSED(imu_interrupt_timestamp_ns);
+#endif
+}
+
 static void finalize_cycle(struct control_context *ctx,
                            uint64_t imu_interrupt_timestamp_ns,
                            uint64_t motor_signal_timestamp_ns) {
   ctx->imu_to_motor_latency_us = imu_to_motor_latency_us(
       imu_interrupt_timestamp_ns, motor_signal_timestamp_ns);
   rdd2_imu_latency_stats_update(ctx->imu_to_motor_latency_us);
+  publish_inertial_sample(ctx, imu_interrupt_timestamp_ns);
   publish_flight_state(ctx);
 }
 

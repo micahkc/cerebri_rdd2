@@ -119,6 +119,10 @@ struct serial_topic {
 	 * a handler carry no topic and skip the bus-size contract check; the
 	 * payload is still validated against the catalog size. */
 	void (*rx_handler)(const uint8_t *payload, size_t len);
+	/* Per-topic outbound pacing override in milliseconds; 0 uses
+	 * CONFIG_RDD2_ZROS_SERIAL_TX_MIN_INTERVAL_MS. High-rate streams like
+	 * raw IMU set 1 and are then paced by the transport poll period. */
+	uint16_t tx_min_interval_ms;
 	/* Resolved from the catalog at init. */
 	uint16_t id;
 	uint16_t payload_size;
@@ -143,6 +147,14 @@ static struct serial_topic g_topics[] = {
 	{.key = "manual", .rx = true, .rx_handler = rdd2_rc_synapse_rx},
 #endif
 	{.key = "health", .topic = &topic_vehicle_health, .tx = true},
+#if defined(CONFIG_RDD2_IMU_TELEMETRY)
+	/* Raw IMU for tuning: change-driven like everything else, but paced
+	 * only by the poll period rather than the shared minimum interval. */
+	{.key = "imu",
+	 .topic = &topic_inertial_sample,
+	 .tx = true,
+	 .tx_min_interval_ms = 1},
+#endif
 	{.key = "att", .topic = &topic_attitude_estimate, .tx = true},
 	{.key = "att_sp", .topic = &topic_attitude_command, .tx = true},
 	{.key = "pwm", .topic = &topic_pwm_signal_outputs, .tx = true},
@@ -448,7 +460,10 @@ static void tx_topic_if_due(struct serial_topic *entry, struct tx_slot *slot, in
 	}
 
 	if (slot->primed &&
-	    (now_ms - slot->last_sent_ms) < CONFIG_RDD2_ZROS_SERIAL_TX_MIN_INTERVAL_MS) {
+	    (now_ms - slot->last_sent_ms) <
+		    (entry->tx_min_interval_ms != 0U
+			     ? (int64_t)entry->tx_min_interval_ms
+			     : CONFIG_RDD2_ZROS_SERIAL_TX_MIN_INTERVAL_MS)) {
 		return;
 	}
 
