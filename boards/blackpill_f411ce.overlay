@@ -89,7 +89,14 @@
 		compatible = "bosch,bmi270";
 		reg = <0>;
 		spi-max-frequency = <8000000>;
-		irq-gpios = <&gpiob 10 GPIO_ACTIVE_HIGH>;
+		/* Entry 0 is INT1, entry 1 is INT2, and the Zephyr driver
+		 * raises data-ready ONLY on INT2 — the breakout's INT2 pin is
+		 * the one wired to PB10. The driver needs both entries and
+		 * empirically fails init when they name the same pin, so INT1
+		 * points at PB8: real, unused, and never driven, its motion
+		 * interrupt can never fire. */
+		irq-gpios = <&gpiob 8 GPIO_ACTIVE_HIGH>,
+			    <&gpiob 10 GPIO_ACTIVE_HIGH>;
 	};
 };
 

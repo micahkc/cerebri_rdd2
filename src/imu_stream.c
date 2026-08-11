@@ -386,12 +386,24 @@ static int imu_trigger_arm(void)
 static void imu_watchdog_work(struct k_work *work)
 {
 	uint32_t count = (uint32_t)atomic_get(&g_imu_sample_count);
+	static uint8_t never_fired_ticks;
 
 	if (g_imu_watchdog_primed && count == g_imu_watchdog_last_count) {
 		int rc = imu_trigger_arm();
 
 		LOG_WRN("imu trigger re-armed by watchdog: %d", rc);
 		g_have_last_sample = false;
+	}
+
+	/* A trigger that never fires at all is a wiring problem (INT line),
+	 * not a stall; re-arming cannot help, but silence would hide it. */
+	if (count == 0U) {
+		if (++never_fired_ticks >= 10U) {
+			never_fired_ticks = 0U;
+			LOG_WRN("imu data-ready has never fired; check the INT wiring");
+		}
+	} else {
+		never_fired_ticks = 0U;
 	}
 
 	g_imu_watchdog_primed = (count != 0U);
@@ -425,17 +437,22 @@ int rdd2_imu_stream_init(void)
 	int rc;
 
 	if (!device_is_ready(g_imu_dev)) {
+		printk("rdd2 init:     imu device NOT ready\n");
 		return -ENODEV;
 	}
 
+	printk("rdd2 init:     imu odr request\n");
 	imu_trigger_request_odr();
 
+	printk("rdd2 init:     imu trigger arm\n");
 	rc = imu_trigger_arm();
 	if (rc != 0) {
+		printk("rdd2 init:     imu trigger arm FAILED: %d\n", rc);
 		LOG_ERR("imu trigger arm failed: %d", rc);
 		return rc;
 	}
 
+	printk("rdd2 init:     imu watchdog scheduled\n");
 	(void)k_work_schedule(&g_imu_watchdog, K_MSEC(RDD2_IMU_WATCHDOG_MS));
 	return 0;
 }

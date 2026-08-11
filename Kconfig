@@ -5,6 +5,16 @@ config TOP_SHELL
     depends on SHELL
     default y
 
+config RDD2_DFU_SHELL
+    bool "dfu shell command: reboot into the STM32 ROM bootloader"
+    depends on SHELL && SOC_SERIES_STM32F4X
+    select REBOOT
+    select SOC_RESET_HOOK
+    help
+      Adds a `dfu` command that warm-reboots into the ROM DFU bootloader
+      via a noinit magic checked in the reset hook, so reflashing over
+      USB never needs the BOOT0 button.
+
 config RDD2_RC_SYNAPSE
     bool "RC from the ManualControl topic over the serial transport"
     depends on RDD2_ZROS_SERIAL

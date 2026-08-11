@@ -36,10 +36,13 @@ int rdd2_control_io_init(void)
 	const struct device *const rc_dev = DEVICE_DT_GET(RC_NODE);
 	const struct device *const imu_dev = DEVICE_DT_GET(IMU_NODE);
 
+	printk("rdd2 init:   rc input\n");
 	rdd2_rc_input_init();
 
 	ready_or_log(rc_dev, "rc");
 	ready_or_log(imu_dev, "imu");
+	printk("rdd2 init:   devices checked (rc=%d imu=%d)\n",
+	       device_is_ready(rc_dev), device_is_ready(imu_dev));
 
 	/* GNSS is not a control input and brings itself up in
 	 * subsys/gnss_source, which reports through `gnss status`. */
@@ -59,11 +62,13 @@ int rdd2_control_io_init(void)
 	}
 #else
 	if (!rdd2_motor_output_ready()) {
+		printk("rdd2 init:   motor outputs NOT ready\n");
 		LOG_ERR("motor outputs not ready");
 		return -ENODEV;
 	}
 #endif
 
+	printk("rdd2 init:   imu stream\n");
 	return rdd2_imu_stream_init();
 }
 

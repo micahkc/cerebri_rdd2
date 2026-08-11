@@ -237,26 +237,36 @@ int main(void) {
   uint32_t attitude_sample_count = 0U;
   int rc;
 
+  /* printk, not LOG: these must reach the console before the shell's log
+   * backend activates, exactly like the boot banner. */
+  printk("rdd2 init: controllers\n");
   *ctx = (struct control_context){0};
   rdd2_attitude_controller_init(&g_attitude_controller);
   rdd2_attitude_estimator_init(&g_attitude_estimator);
   rdd2_rate_controller_init(&g_rate_controller);
   rdd2_imu_latency_stats_reset();
 
+  printk("rdd2 init: flight state topics\n");
   rc = flight_state_topic_init();
   if (rc != 0) {
+    printk("rdd2 init: flight state topics FAILED: %d\n", rc);
     return rc;
   }
 
+  printk("rdd2 init: motor output\n");
   rdd2_motor_output_init();
 
+  printk("rdd2 init: control io\n");
   rc = rdd2_control_io_init();
   if (rc != 0) {
+    printk("rdd2 init: control io FAILED: %d\n", rc);
     return rc;
   }
 
+  printk("rdd2 init: shell formatters\n");
   rdd2_topic_shell_formatters_init();
 
+  printk("rdd2 init: complete, entering control loop\n");
   LOG_INF("RDD2 flight stack starting");
 
   while (true) {

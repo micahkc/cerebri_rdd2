@@ -23,6 +23,7 @@ target_sources_ifdef(CONFIG_TOP_SHELL app PRIVATE
 )
 
 target_sources_ifdef(CONFIG_RDD2_RC_SYNAPSE app PRIVATE rc_synapse.c)
+target_sources_ifdef(CONFIG_RDD2_DFU_SHELL app PRIVATE dfu_reboot.c)
 
 target_sources_ifdef(CONFIG_RDD2_FASTDYN app PRIVATE fastdyn_board.c)
 
